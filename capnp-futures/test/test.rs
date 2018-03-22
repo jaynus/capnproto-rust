@@ -22,7 +22,7 @@
 extern crate capnp;
 extern crate capnp_futures;
 extern crate futures;
-extern crate tokio_core;
+extern crate tokio;
 extern crate mio_uds;
 
 pub mod addressbook_capnp {
@@ -79,12 +79,13 @@ mod tests {
 
     #[test]
     fn foo() {
-        use tokio_core::reactor;
+        use tokio::reactor;
+        use tokio::executor;
         use mio_uds::UnixStream;
         use capnp;
         use capnp_futures;
-        use futures::future::Future;
-        use futures::stream::Stream;
+        use futures::future::{Future, FutureExt};
+        use futures::stream::{Stream, StreamExt};
 
         use std::cell::Cell;
         use std::rc::Rc;
@@ -92,8 +93,8 @@ mod tests {
         let mut l = reactor::Core::new().unwrap();
         let handle = l.handle();
         let (s1, s2) = UnixStream::pair().unwrap();
-        let s1 = reactor::PollEvented::new(s1, &handle).unwrap();
-        let s2 = reactor::PollEvented::new(s2, &handle).unwrap();
+        let s1 = reactor::PollEvented2::new(s1);
+        let s2 = reactor::PollEvented2::new(s2);
 
         let (mut sender, write_queue) = capnp_futures::write_queue(s1);
 
@@ -113,10 +114,10 @@ mod tests {
 
         let mut m = capnp::message::Builder::new_default();
         populate_address_book(m.init_root());
-        handle.spawn(sender.send(m).map_err(|_| panic!("cancelled")).map(|_| { println!("SENT"); ()}));
+//        handle.spawn(sender.send(m).map_err(|_| panic!("cancelled")).map(|_| { println!("SENT"); ()}));
         drop(sender);
 
-        l.run(io).expect("running");
+        ::tokio::runtime::current_thread::run2(io);
 
         assert_eq!(messages_read1.get(), 1);
     }

@@ -32,7 +32,7 @@ struct Unparker {
 
     // It's sad that we need a mutex here, even though we know that the RPC
     // system is restricted to a single thread.
-    tasks: Mutex<HashMap<u64, task::Task>>,
+    tasks: Mutex<HashMap<u64, task::Waker>>,
 }
 
 impl Unparker {
@@ -43,8 +43,8 @@ impl Unparker {
         }
     }
 
-    fn insert(&self, idx: u64, task: task::Task) {
-        self.tasks.lock().unwrap().insert(idx, task);
+    fn insert(&self, idx: u64, waker: task::Waker) {
+        self.tasks.lock().unwrap().insert(idx, waker);
     }
 
     fn remove(&self, idx: u64) {
@@ -119,10 +119,10 @@ impl <F> Future for ForkedPromise<F>
     type Item = F::Item;
     type Error = F::Error;
 
-    fn poll(&mut self) -> ::futures::Poll<Self::Item, Self::Error> {
+    fn poll(&mut self, cx: &mut task::Context) -> ::futures::Poll<Self::Item, Self::Error> {
         let unparker = match *self.inner.state.borrow() {
             State::Waiting(ref unparker, _) => {
-                unparker.insert(self.id, task::current());
+                unparker.insert(self.id, cx.waker().clone());
                 if unparker.original_needs_poll.swap(false, Ordering::SeqCst) {
                     unparker.clone()
                 } else {
@@ -131,9 +131,9 @@ impl <F> Future for ForkedPromise<F>
             }
             State::Polling(ref unparker) => {
                 if unparker.original_needs_poll.load(Ordering::SeqCst) {
-                    task::current().notify();
+                    cx.waker().wake();
                 } else {
-                    unparker.insert(self.id, task::current());
+                    unparker.insert(self.id, cx.waker().clone());
                 }
                 return Ok(Async::NotReady)
             }
@@ -201,7 +201,7 @@ mod test {
         mode: Mode,
         left: F,
         right: F,
-        task: Option<::futures::task::Task>,
+        task: Option<::futures::task::Waker>,
     }
 
     struct ModedFuture<F> where F: Future {
@@ -234,13 +234,13 @@ mod test {
     impl <F> Future for ModedFuture<F> where F: Future {
         type Item = F::Item;
         type Error = F::Error;
-        fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        fn poll(&mut self, cx: &mut task::Context) -> Poll<Self::Item, Self::Error> {
             let ModedFutureInner { ref mut mode, ref mut left, ref mut right, ref mut task } =
                 *self.inner.borrow_mut();
-            *task = Some(::futures::task::current());
+            *task = Some(cx.waker().clone());
             match *mode {
-                Mode::Left => left.poll(),
-                Mode::Right => right.poll(),
+                Mode::Left => left.poll(cx),
+                Mode::Right => right.poll(cx),
             }
         }
     }
@@ -337,8 +337,8 @@ mod test {
         let f1 = ForkedPromise::new(run_stream);
         let f2 = f1.clone();
         let f3 = f1.clone();
-        tx0.unbounded_send(Box::new(future::lazy(move || {
-            task::current().notify();
+        tx0.unbounded_send(Box::new(future::lazy(move |cx| {
+            cx.waker().wake();
             f1.map(|_|()).map_err(|_|())
                 .select(rx1.map_err(|_|()))
                 .map(|_| ()).map_err(|_|())

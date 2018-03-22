@@ -27,7 +27,7 @@ use std::rc::{Rc};
 enum State<T1, T2, E>
     where E: Clone,
 {
-    NotReady(Option<task::Task>, Option<task::Task>),
+    NotReady(Option<task::Waker>, Option<task::Waker>),
     Ready(Option<Result<T1, E>>, Option<Result<T2, E>>),
 }
 
@@ -103,7 +103,7 @@ impl <F, T1, T2, E> Future for SplitLeft<F, T1, T2, E>
 {
     type Item = T1;
     type Error = E;
-    fn poll(&mut self) -> Result<::futures::Async<Self::Item>, Self::Error> {
+    fn poll(&mut self, cx: &mut task::Context) -> Result<::futures::Async<Self::Item>, Self::Error> {
         match *self.inner.state.borrow_mut() {
             State::NotReady(_, _) => (),
             State::Ready(ref mut t1, _) => {
@@ -121,7 +121,7 @@ impl <F, T1, T2, E> Future for SplitLeft<F, T1, T2, E>
             Ok(::futures::Async::NotReady) => {
                 match *self.inner.state.borrow_mut() {
                     State::NotReady(ref mut left_task, _) => {
-                        *left_task = Some(task::current());
+                        *left_task = Some(cx.waker().clone());
                     }
                     _ => unreachable!()
                 }
@@ -158,7 +158,7 @@ impl <F, T1, T2, E> Future for SplitRight<F, T1, T2, E>
 {
     type Item = T2;
     type Error = E;
-    fn poll(&mut self) -> Result<::futures::Async<Self::Item>, Self::Error> {
+    fn poll(&mut self, cx: &mut task::Context) -> Result<::futures::Async<Self::Item>, Self::Error> {
         match *self.inner.state.borrow_mut() {
             State::NotReady(_, _) => (),
             State::Ready(_, ref mut t2) => {
@@ -170,12 +170,12 @@ impl <F, T1, T2, E> Future for SplitRight<F, T1, T2, E>
             }
         }
 
-        let done_val = match self.inner.original_future.borrow_mut().poll() {
+        let done_val = match self.inner.original_future.borrow_mut().poll(cx) {
             Ok(::futures::Async::Ready(v)) => Ok(v),
             Ok(::futures::Async::NotReady) => {
                 match *self.inner.state.borrow_mut() {
                     State::NotReady(_, ref mut right_task) => {
-                        *right_task = Some(task::current());
+                        *right_task = Some(cx.waker().clone());
                     }
                     _ => unreachable!()
                 }

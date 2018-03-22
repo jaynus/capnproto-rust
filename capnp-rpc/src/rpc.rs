@@ -26,7 +26,7 @@ use capnp::private::capability::{ClientHook, ParamsHook, PipelineHook, PipelineO
                                  RequestHook, ResponseHook, ResultsHook};
 
 use futures::{future, Future};
-use futures::sync::oneshot;
+use futures::channel::oneshot;
 
 use std::vec::Vec;
 use std::collections::hash_map::HashMap;
@@ -1560,7 +1560,7 @@ where
     type Item = ();
     type Error = ::capnp::Error;
 
-    fn poll(&mut self) -> ::futures::Poll<Self::Item, Self::Error> {
+    fn poll(&mut self, cx: &mut ::futures::task::Context) -> ::futures::Poll<Self::Item, Self::Error> {
         self.state = match self.state {
             DisconnectorState::Connected => {
                 self.disconnect();
@@ -1580,8 +1580,8 @@ where
         match self.state {
             DisconnectorState::Connected => unreachable!(),
             DisconnectorState::Disconnecting => {
-                ::futures::task::current().notify();
-                Ok(::futures::Async::NotReady)
+                cx.waker().wake();
+                Ok(::futures::Async::Pending)
             },
             DisconnectorState::Disconnected => Ok(::futures::Async::Ready(())),
         }

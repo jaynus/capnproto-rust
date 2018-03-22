@@ -21,15 +21,14 @@
 //! Asynchronous reading and writing of messages using the
 //! [standard stream framing](https://capnproto.org/encoding.html#serialization-over-a-stream).
 
-use std::io::{self};
-
 use capnp::{message, Error, Result, Word, OutputSegments};
 
 use byteorder::{ByteOrder, LittleEndian};
 use futures::future::Future;
 use futures::sink::Sink;
 use futures::stream::Stream;
-use futures::{Async, AsyncSink, Poll, StartSend};
+use futures::{io, task};
+use futures::{Async, Poll};
 
 pub struct OwnedSegments {
     segment_slices: Vec<(usize, usize)>,
@@ -49,15 +48,16 @@ impl message::ReaderSegments for OwnedSegments {
 
 /// Reads bytes from `read` into `buf` until either `buf` is full, or the read
 /// would block. Returns the number of bytes read.
-fn async_read_all<R>(read: &mut R, buf: &mut [u8]) -> io::Result<usize> where R: io::Read {
+fn async_read_all<R>(read: &mut R, cx: &mut task::Context, buf: &mut [u8])
+                     -> ::std::io::Result<usize> where R: io::AsyncRead
+{
     let mut idx = 0;
     while idx < buf.len() {
         let slice = &mut buf[idx..];
-        match read.read(slice) {
-            Ok(n) if n == 0 => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Premature EOF")),
-            Ok(n) => idx += n,
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
-            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => (),
+        match read.poll_read(cx, slice) {
+            Ok(Async::Ready(n)) if n == 0 => return Err(io::Error::new(::std::io::ErrorKind::UnexpectedEof, "Premature EOF")),
+            Ok(Async::Ready(n)) => idx += n,
+            Ok(Async::Pending) => break,
             Err(e) => return Err(e),
         }
     }
@@ -66,16 +66,16 @@ fn async_read_all<R>(read: &mut R, buf: &mut [u8]) -> io::Result<usize> where R:
 
 /// Writes bytes from `buf` into `write` until either all bytes are written, or
 /// the write would block. Returns the number of bytes written.
-fn async_write_all<W>(write: &mut W, buf: &[u8]) -> io::Result<usize> where W: io::Write {
+fn async_write_all<W>(write: &mut W, cx: &mut task::Context, buf: &[u8]) -> io::Result<usize> where W: io::AsyncWrite {
     let mut idx = 0;
     while idx < buf.len() {
         let slice = &buf[idx..];
-        match write.write(slice) {
-            Ok(n) if n == 0 => return Err(io::Error::new(io::ErrorKind::WriteZero,
-                                                         "failed to write whole buffer")),
-            Ok(n) => idx += n,
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
-            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => (),
+        match write.poll_write(cx, slice) {
+            Ok(Async::Ready(n)) if n == 0 => return Err(::std::io::Error::new(
+                ::std::io::ErrorKind::WriteZero,
+                "failed to write whole buffer")),
+            Ok(Async::Ready(n)) => idx += n,
+            Ok(Async::Pending) => break,
             Err(e) => return Err(e),
         }
     }
@@ -83,11 +83,11 @@ fn async_write_all<W>(write: &mut W, buf: &[u8]) -> io::Result<usize> where W: i
 }
 
 /// An in-progress read operation.
-pub struct Read<R> where R: ::std::io::Read {
+pub struct Read<R> where R: io::AsyncRead {
     state: ReadState<R>,
 }
 
-enum ReadState<R> where R: ::std::io::Read {
+enum ReadState<R> where R: io::AsyncRead {
     Reading {
         read: R,
         options: message::ReaderOptions,
@@ -129,7 +129,7 @@ enum InnerReadState {
 
 /// Begins an asynchronous read of a message from `reader`.
 pub fn read_message<R>(reader: R, options: message::ReaderOptions) -> Read<R>
-    where R: io::Read
+    where R: io::AsyncRead
 {
     Read {
         state: ReadState::Reading {
@@ -145,14 +145,14 @@ impl InnerReadState {
 	InnerReadState::SegmentTableFirst { buf: [0; 8], idx: 0 }
     }
 
-    fn read_helper<R>(&mut self, read: &mut R, options: &message::ReaderOptions)
+    fn read_helper<R>(&mut self, read: &mut R, cx: &mut task::Context, options: &message::ReaderOptions)
                       -> Result<Async<Option<(Vec<Word>, Vec<(usize, usize)>)>>>
-        where R: ::std::io::Read
+        where R: io::AsyncRead
     {
         loop {
             let next_state = match *self {
                 InnerReadState::SegmentTableFirst { ref mut buf, ref mut idx } => {
-                    let n = match async_read_all(read, &mut buf[*idx..]) {
+                    let n = match async_read_all(read, cx, &mut buf[*idx..]) {
                         Ok(n) => n,
                         Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof =>
                             return Ok(Async::Ready(None)),
@@ -160,7 +160,7 @@ impl InnerReadState {
                     };
                     *idx += n;
                     if *idx < buf.len() {
-                        return Ok(Async::NotReady)
+                        return Ok(Async::Pending)
                     } else {
                         let (segment_count, first_segment_length) = try!(parse_segment_table_first(buf));
                         if segment_count == 1 {
@@ -186,9 +186,9 @@ impl InnerReadState {
                     ref mut segment_size_buf,
                     ref mut idx,
                 } => {
-                    *idx += try!(async_read_all(read, &mut segment_size_buf[*idx..]));
+                    *idx += try!(async_read_all(read, cx, &mut segment_size_buf[*idx..]));
                     if *idx < segment_size_buf.len() {
-                        return Ok(Async::NotReady)
+                        return Ok(Async::Pending)
                     } else {
                         let (word_count, segment_slices) =
                             try!(parse_segment_table_rest(
@@ -204,11 +204,11 @@ impl InnerReadState {
                 InnerReadState::Segments { ref mut segment_slices, ref mut owned_space, ref mut idx } => {
                     let len = {
                         let bytes = Word::words_to_bytes_mut(owned_space);
-                        *idx += try!(async_read_all(read, &mut bytes[*idx..]));
+                        *idx += try!(async_read_all(read, cx, &mut bytes[*idx..]));
                         bytes.len()
                     };
                     if *idx < len {
-                        return Ok(Async::NotReady)
+                        return Ok(Async::Pending)
                     } else {
                         let words = ::std::mem::replace(owned_space, Vec::new());
                         let slices = ::std::mem::replace(segment_slices, Vec::new());
@@ -222,16 +222,16 @@ impl InnerReadState {
     }
 }
 
-impl <R> Read<R> where R: ::std::io::Read {
+impl <R> Read<R> where R: io::AsyncRead {
     /// Drives progress on an in-progress read. Returns `Async::NotReady` when the
     /// underyling reader returns `ErrorKind::WouldBlock`.
-    fn poll(&mut self) -> Result<Async<(R, Option<message::Reader<OwnedSegments>>)>> {
+    fn poll(&mut self, cx: &mut task::Context) -> Result<Async<(R, Option<message::Reader<OwnedSegments>>)>> {
         let result = match &mut self.state {
             &mut ReadState::Empty => {
                 return Err(Error::failed("tried to read empty ReadState".to_string()))
             }
             &mut ReadState::Reading { ref mut read, ref options, ref mut inner } => {
-                try_ready!(inner.read_helper(read, options))
+                try_ready!(inner.read_helper(read, cx, options))
             }
         };
 
@@ -253,11 +253,11 @@ impl <R> Read<R> where R: ::std::io::Read {
     }
 }
 
-impl <R> Future for Read<R> where R: ::std::io::Read {
+impl <R> Future for Read<R> where R: io::AsyncRead {
     type Item = (R, Option<message::Reader<OwnedSegments>>);
     type Error = Error;
-    fn poll(&mut self) -> Poll<Self::Item, Error> {
-        Read::poll(self)
+    fn poll(&mut self, cx: &mut task::Context) -> Poll<Self::Item, Error> {
+        Read::poll(self, cx)
     }
 }
 
@@ -312,12 +312,12 @@ fn parse_segment_table_rest(options: &message::ReaderOptions,
 
 /// An in-progress write operation.
 #[derive(Debug)]
-pub struct Write<W, M> where W: ::std::io::Write, M: AsOutputSegments {
+pub struct Write<W, M> where W: io::AsyncWrite, M: AsOutputSegments {
     state: WriteState<W, M>,
 }
 
 #[derive(Debug)]
-enum WriteState<W, M> where W: ::std::io::Write, M: AsOutputSegments, {
+enum WriteState<W, M> where W: io::AsyncWrite, M: AsOutputSegments, {
     Writing {
         writer: W,
         message: M,
@@ -372,24 +372,24 @@ impl InnerWriteState {
         }
     }
 
-    fn write_helper<W, M>(&mut self, writer: &mut W, message: &mut M)
+    fn write_helper<W, M>(&mut self, writer: &mut W, cx: &mut task::Context, message: &mut M)
                           -> io::Result<Async<()>>
-        where W: ::std::io::Write, M: AsOutputSegments,
+        where W: io::AsyncWrite, M: AsOutputSegments,
     {
         loop {
             let new_state = match *self {
                 InnerWriteState::OneWordSegmentTable { ref mut buf, ref mut idx } => {
-                    *idx += try!(async_write_all(writer, &buf[*idx..]));
+                    *idx += try!(async_write_all(writer, cx, &buf[*idx..]));
                     if *idx < 8 {
-                        return Ok(Async::NotReady)
+                        return Ok(Async::Pending)
                     } else {
                         InnerWriteState::Segments { segment_idx: 0, idx: 0 }
                     }
                 }
                 InnerWriteState::MoreThanOneWordSegmentTable { ref mut buf, ref mut idx } => {
-                    *idx += try!(async_write_all(writer, &buf[*idx..]));
+                    *idx += try!(async_write_all(writer, cx, &buf[*idx..]));
                     if *idx < buf.len() {
-                        return Ok(Async::NotReady)
+                        return Ok(Async::Pending)
                     } else {
                         InnerWriteState::Segments { segment_idx: 0, idx: 0 }
                     }
@@ -399,9 +399,9 @@ impl InnerWriteState {
                     while *segment_idx < segments.len() {
                         let segment = segments[*segment_idx];
                         let buf = Word::words_to_bytes(segment);
-                        *idx += try!(async_write_all(writer, &buf[*idx..]));
+                        *idx += try!(async_write_all(writer, cx, &buf[*idx..]));
                         if *idx < buf.len() {
-                            return Ok(Async::NotReady)
+                            return Ok(Async::Pending)
                         } else {
                             *segment_idx += 1;
                             *idx = 0;
@@ -417,11 +417,11 @@ impl InnerWriteState {
     }
 }
 
-impl <W, M> Future for Write<W, M> where W: ::std::io::Write, M: AsOutputSegments {
+impl <W, M> Future for Write<W, M> where W: io::AsyncWrite, M: AsOutputSegments {
     type Item = (W, M);
     type Error = Error;
-    fn poll(&mut self) -> Poll<(W, M), Error> {
-        Write::poll(self)
+    fn poll(&mut self, cx: &mut task::Context) -> Poll<(W, M), Error> {
+        Write::poll(self, cx)
     }
 }
 
@@ -450,7 +450,7 @@ impl <A> AsOutputSegments for ::std::rc::Rc<message::Builder<A>> where A: messag
 
 /// Begins an asynchronous write of provided message to `writer`.
 pub fn write_message<W, M>(writer: W, message: M) -> Write<W, M>
-    where W: ::std::io::Write, M: AsOutputSegments
+    where W: io::AsyncWrite, M: AsOutputSegments
 {
     let inner = InnerWriteState::new(&message);
     Write {
@@ -462,17 +462,17 @@ pub fn write_message<W, M>(writer: W, message: M) -> Write<W, M>
     }
 }
 
-impl <W, M> Write<W, M> where W: ::std::io::Write, M: AsOutputSegments {
+impl <W, M> Write<W, M> where W: io::AsyncWrite, M: AsOutputSegments {
     /// Drives progress on an in-progress write. Returns `Async::NotReady` when the
     /// underyling writer returns `ErrorKind::WouldBlock`.
-    fn poll(&mut self) -> Result<Async<(W, M)>>
+    fn poll(&mut self, cx: &mut task::Context) -> Result<Async<(W, M)>>
     {
         match self.state {
             WriteState::Empty => {
                 return Err(Error::failed("tried to poll empty Write".to_string()))
             }
             WriteState::Writing { ref mut writer, ref mut message, ref mut inner } => {
-                try_ready!(inner.write_helper(writer, message));
+                try_ready!(inner.write_helper(writer, cx, message));
             }
         };
 
@@ -485,7 +485,7 @@ impl <W, M> Write<W, M> where W: ::std::io::Write, M: AsOutputSegments {
         }
     }
 }
-
+/*
 pub struct Transport<S, M> {
     stream: S,
     read_options: message::ReaderOptions,
@@ -508,7 +508,7 @@ impl <S, M> Stream for Transport<S, M> where S: io::Read {
     type Item = message::Reader<OwnedSegments>;
     type Error = Error;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Error> {
+    fn poll_next(&mut self, cx: &mut task::Context) -> Poll<Option<Self::Item>, Error> {
         match try_ready!(self.read_state.read_helper(&mut self.stream, &self.read_options)) {
             Some((words, slices))=> {
                 self.read_state = InnerReadState::new();
@@ -557,19 +557,19 @@ impl <S, M> Sink for Transport<S, M> where S: io::Write, M: AsOutputSegments {
         Ok(Async::Ready(()))
     }
 }
-
+*/
 
 #[cfg(test)]
 pub mod test {
-
     use std::cmp;
-    use std::io::{self, Cursor, Read, Write};
+    use std::io::{Cursor, Read, Write};
 
     use quickcheck::{quickcheck, TestResult};
 
     use capnp::{Word, message, Result, OutputSegments};
     use capnp::message::ReaderSegments;
-    use futures::Async;
+    use futures::{task, Async};
+    use futures::io::{AsyncRead, AsyncWrite};
 
     use super::{
         AsOutputSegments,
@@ -762,16 +762,19 @@ pub mod test {
         }
     }
 
-    impl <R> Read for BlockingRead<R> where R: Read {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    impl <R> AsyncRead for BlockingRead<R> where R: Read {
+        fn poll_read(&mut self, cx: &mut task::Context, buf: &mut [u8])
+                     -> ::std::result::Result<Async<usize>, ::std::io::Error>
+        {
             if self.idx == 0 {
                 self.idx = self.frequency;
-                Err(io::Error::new(io::ErrorKind::WouldBlock, "BlockingRead"))
+                cx.waker().wake();
+                Ok(Async::Pending)
             } else {
                 let len = cmp::min(self.idx, buf.len());
                 let bytes_read = try!(self.read.read(&mut buf[..len]));
                 self.idx -= bytes_read;
-                Ok(bytes_read)
+                Ok(Async::Ready(bytes_read))
             }
         }
     }
@@ -797,19 +800,30 @@ pub mod test {
         }
     }
 
-    impl <W> Write for BlockingWrite<W> where W: Write {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+    impl <W> AsyncWrite for BlockingWrite<W> where W: Write {
+        fn poll_write(&mut self, cx: &mut task::Context, buf: &[u8])
+                      -> ::std::result::Result<Async<usize>, ::std::io::Error>
+        {
             if self.idx == 0 {
                 self.idx = self.frequency;
-                Err(io::Error::new(io::ErrorKind::WouldBlock, "BlockingWrite"))
+                cx.waker().wake();
+                Ok(Async::Pending)
             } else {
                 let len = cmp::min(self.idx, buf.len());
                 let bytes_written = try!(self.writer.write(&buf[..len]));
                 self.idx -= bytes_written;
-                Ok(bytes_written)
+                Ok(Async::Ready(bytes_written))
             }
         }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn poll_flush(&mut self, _cx: &mut task::Context)
+                      -> ::std::result::Result<Async<()>, ::std::io::Error> {
+            Ok(Async::Ready(()))
+        }
+        fn poll_close(&mut self, _cx: &mut task::Context)
+                      -> ::std::result::Result<Async<()>, ::std::io::Error> {
+            Ok(Async::Ready(()))
+        }
+
     }
 
     #[test]
@@ -827,31 +841,17 @@ pub mod test {
                 let writer = BlockingWrite::new(cursor, write_block_frequency);
                 let mut state = write_message(writer, segments);
 
-                let mut result = state.poll().unwrap();
-                while let Async::NotReady = result {
-                    result = state.poll().unwrap();
-                }
+                let (writer, m) = ::futures::executor::block_on(state).unwrap();
 
-                match result {
-                    Async::NotReady => unreachable!(),
-                    Async::Ready((writer, m)) => {
-                        let mut cursor = writer.into_writer();
-                        cursor.set_position(0);
-                        (BlockingRead::new(cursor, read_block_frequency), m)
-                    }
-                }
+                let mut cursor = writer.into_writer();
+                cursor.set_position(0);
+                (BlockingRead::new(cursor, read_block_frequency), m)
             };
 
             let message = {
                 let mut state = read_message(&mut read, Default::default());
-                let mut result = state.poll().unwrap();
-                while let Async::NotReady = result {
-                    result = state.poll().unwrap();
-                }
-                match result {
-                    Async::Ready((_, m)) => m.unwrap(),
-                    _ => unreachable!(),
-                }
+                let (_, m) = ::futures::executor::block_on(state).unwrap();
+                m.unwrap()
             };
             let message_segments = message.into_segments();
 

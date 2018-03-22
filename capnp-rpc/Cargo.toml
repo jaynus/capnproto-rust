@@ -21,7 +21,7 @@ path = "src/lib.rs"
 capnpc = { version = "0.8.8", path = "../capnpc" }
 
 [dependencies]
-futures = "0.1.15"
+futures = "0.2.0-beta"
 capnp-futures = { version = "0.1", path = "../capnp-futures" }
 capnp = {version = "0.8.13", path = "../capnp",  features = ["rpc"]}
 

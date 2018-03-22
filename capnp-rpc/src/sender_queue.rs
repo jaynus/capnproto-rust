@@ -20,7 +20,7 @@
 // THE SOFTWARE.
 
 use futures::{Future};
-use futures::sync::oneshot;
+use futures::channel::oneshot;
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};

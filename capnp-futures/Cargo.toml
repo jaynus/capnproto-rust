@@ -14,7 +14,7 @@ keywords = ["async"]
 
 byteorder = "1.0"
 capnp = { version = "0.8", path = "../capnp" }
-futures = "0.1.12"
+futures = "0.2.0-beta"
 
 [dev-dependencies]
 capnp = { version = "0.8", path = "../capnp", features = ["quickcheck"] }

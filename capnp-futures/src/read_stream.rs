@@ -18,20 +18,19 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-use std::io;
 use futures::future::Future;
 use futures::stream::Stream;
-use futures::{Async, Poll};
+use futures::{io, Async, Poll};
 
 use capnp::{Error, message};
 
 #[must_use = "streams do nothing unless polled"]
-pub struct ReadStream<R> where R: io::Read {
+pub struct ReadStream<R> where R: io::AsyncRead {
     options: message::ReaderOptions,
     read: ::serialize::Read<R>,
 }
 
-impl <R> ReadStream<R> where R: io::Read {
+impl <R> ReadStream<R> where R: io::AsyncRead {
     pub fn new(reader: R, options: message::ReaderOptions) -> ReadStream<R> {
         ReadStream {
             read: ::serialize::read_message(reader, options),
@@ -40,12 +39,12 @@ impl <R> ReadStream<R> where R: io::Read {
     }
 }
 
-impl <R> Stream for ReadStream<R> where R: io::Read {
+impl <R> Stream for ReadStream<R> where R: io::AsyncRead {
     type Item = message::Reader<::serialize::OwnedSegments>;
     type Error = Error;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Error> {
-        let (r, m) = try_ready!(Future::poll(&mut self.read));
+    fn poll_next(&mut self, cx: &mut ::futures::task::Context) -> Poll<Option<Self::Item>, Error> {
+        let (r, m) = try_ready!(Future::poll(&mut self.read, cx));
         self.read = ::serialize::read_message(r, self.options);
         Ok(Async::Ready(m))
     }

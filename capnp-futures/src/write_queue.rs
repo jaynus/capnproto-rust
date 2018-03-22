@@ -18,20 +18,19 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-use std::io;
 use std::collections::VecDeque;
 use std::rc::{Rc, Weak};
 use std::cell::RefCell;
-use futures::{task, Async, Poll};
-use futures::future::Future;
-use futures::sync::oneshot;
+use futures::{io, task, Async, Poll};
+use futures::future::{Future, FutureExt};
+use futures::channel::oneshot;
 
 use capnp::{Error};
 
 use serialize::{self, AsOutputSegments};
 
 
-enum State<W, M> where W: io::Write, M: AsOutputSegments {
+enum State<W, M> where W: io::AsyncWrite, M: AsOutputSegments {
     Writing(serialize::Write<W, M>, oneshot::Sender<M>),
     BetweenWrites(W),
     Empty,
@@ -39,7 +38,7 @@ enum State<W, M> where W: io::Write, M: AsOutputSegments {
 
 /// A queue of messages being written.
 #[must_use = "futures do nothing unless polled"]
-pub struct WriteQueue<W, M> where W: io::Write, M: AsOutputSegments {
+pub struct WriteQueue<W, M> where W: io::AsyncWrite, M: AsOutputSegments {
     inner: Rc<RefCell<Inner<M>>>,
     state: State<W, M>,
 }
@@ -47,7 +46,7 @@ pub struct WriteQueue<W, M> where W: io::Write, M: AsOutputSegments {
 struct Inner<M> {
     queue: VecDeque<(M, oneshot::Sender<M>)>,
     sender_count: usize,
-    task: Option<task::Task>,
+    task: Option<task::Waker>,
 
     // If set, then the queue has been requested to end, and we should complete the oneshot once
     // the queue has been emptied.
@@ -84,7 +83,7 @@ impl <M> Drop for Sender<M> where M: AsOutputSegments {
 
 /// Creates a new WriteQueue that wraps the given writer.
 pub fn write_queue<W, M>(writer: W) -> (Sender<M>, WriteQueue<W, M>)
-    where W: io::Write, M: AsOutputSegments
+    where W: io::AsyncWrite, M: AsOutputSegments
 {
     let inner = Rc::new(RefCell::new(Inner {
         queue: VecDeque::new(),
@@ -118,7 +117,7 @@ impl <M> Sender<M> where M: AsOutputSegments + 'static {
                 }
 
                 match rc_inner.borrow_mut().task.take() {
-                    Some(t) => t.notify(),
+                    Some(t) => t.wake(),
                     None => (),
                 }
             }
@@ -151,7 +150,7 @@ impl <M> Sender<M> where M: AsOutputSegments + 'static {
                 rc_inner.borrow_mut().end_notifier = Some((result, complete));
 
                 match rc_inner.borrow_mut().task.take() {
-                    Some(t) => t.notify(),
+                    Some(t) => t.wake(),
                     None => (),
                 }
             }
@@ -163,21 +162,21 @@ impl <M> Sender<M> where M: AsOutputSegments + 'static {
     }
 }
 
-enum IntermediateState<W, M> where W: io::Write, M: AsOutputSegments {
+enum IntermediateState<W, M> where W: io::AsyncWrite, M: AsOutputSegments {
     WriteDone(M, W),
     StartWrite(M, oneshot::Sender<M>),
     Resolve,
 }
 
-impl <W, M> Future for WriteQueue<W, M> where W: io::Write, M: AsOutputSegments {
+impl <W, M> Future for WriteQueue<W, M> where W: io::AsyncWrite, M: AsOutputSegments {
     type Item = W; // Resolves when all senders have been dropped and all messages written.
     type Error = Error;
 
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+    fn poll(&mut self, cx: &mut task::Context) -> Poll<Self::Item, Self::Error> {
         loop {
             let next = match self.state {
                 State::Writing(ref mut write, ref mut _complete) => {
-                    let (w, m) = try_ready!(Future::poll(write));
+                    let (w, m) = try_ready!(Future::poll(write, cx));
                     IntermediateState::WriteDone(m, w)
                 }
                 State::BetweenWrites(ref mut _writer) => {
@@ -192,8 +191,8 @@ impl <W, M> Future for WriteQueue<W, M> where W: io::Write, M: AsOutputSegments 
                             if count == 0 || ended {
                                 IntermediateState::Resolve
                             } else {
-                                self.inner.borrow_mut().task = Some(task::current());
-                                return Ok(Async::NotReady)
+                                self.inner.borrow_mut().task = Some(cx.waker().clone());
+                                return Ok(Async::Pending)
                             }
                         }
                     }

@@ -64,7 +64,7 @@ extern crate capnp_futures;
 extern crate futures;
 
 use futures::{Future};
-use futures::sync::oneshot;
+use futures::channel::oneshot;
 use capnp::Error;
 use capnp::capability::Promise;
 use capnp::private::capability::{ClientHook, ServerHook};

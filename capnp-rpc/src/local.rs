@@ -27,7 +27,7 @@ use capnp::private::capability::{ClientHook, ParamsHook, PipelineHook, PipelineO
 
 use attach::Attach;
 use futures::Future;
-use futures::sync::oneshot;
+use futures::channel::oneshot;
 
 use std::cell::RefCell;
 use std::rc::{Rc};

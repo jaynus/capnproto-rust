@@ -20,7 +20,7 @@
 
 use futures::{Async, Future, Stream};
 use futures::stream::FuturesUnordered;
-use futures::unsync::mpsc;
+use futures::channel::mpsc;
 
 use std::cell::{RefCell};
 use std::rc::Rc;

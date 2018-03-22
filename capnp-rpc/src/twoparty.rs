@@ -24,7 +24,7 @@
 use capnp::message::ReaderOptions;
 use capnp::capability::Promise;
 use futures::Future;
-use futures::sync::oneshot;
+use futures::channel::oneshot;
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
