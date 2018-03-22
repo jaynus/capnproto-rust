@@ -66,7 +66,7 @@ pub trait ClientHook {
     /// Repeatedly calls whenMoreResolved() until it returns nullptr.
     #[cfg(feature = "rpc")]
     fn when_resolved(&self) -> Promise<(), ::Error> {
-        use futures::Future;
+        use futures::FutureExt;
 
         match self.when_more_resolved() {
             Some(promise) => {

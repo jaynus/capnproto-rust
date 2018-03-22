@@ -262,13 +262,13 @@ impl ::std::convert::From<::std::str::Utf8Error> for Error {
     }
 }
 
-
+/*
 #[cfg(feature = "rpc")]
 impl ::std::convert::From<futures::sync::oneshot::Canceled> for Error {
     fn from(_e: futures::sync::oneshot::Canceled) -> Error {
         Error::failed(format!("oneshot was canceled"))
     }
-}
+}*/
 
 impl ::std::convert::From<NotInSchema> for Error {
     fn from(e: NotInSchema) -> Error {

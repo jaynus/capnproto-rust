@@ -28,7 +28,7 @@ use traits::{Pipelined, Owned};
 use private::capability::{ClientHook, ParamsHook, RequestHook, ResponseHook, ResultsHook};
 
 #[cfg(feature = "rpc")]
-use futures::Future;
+use futures::{Future, FutureExt};
 
 use std::marker::PhantomData;
 
@@ -73,7 +73,7 @@ impl <T, E> Future for Promise<T, E>
     type Item = T;
     type Error = E;
 
-    fn poll(&mut self) -> ::futures::Poll<Self::Item, Self::Error> {
+    fn poll(&mut self, cx: &mut ::futures::task::Context) -> ::futures::Poll<Self::Item, Self::Error> {
         match self.inner {
             PromiseInner::Empty => panic!("Promise polled after done."),
             ref mut imm @ PromiseInner::Immediate(_) => {
@@ -83,7 +83,7 @@ impl <T, E> Future for Promise<T, E>
                     _ => unreachable!(),
                 }
             }
-            PromiseInner::Deferred(ref mut f) => f.poll(),
+            PromiseInner::Deferred(ref mut f) => f.poll(cx),
         }
     }
 }
