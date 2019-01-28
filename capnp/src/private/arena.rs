@@ -91,6 +91,7 @@ impl <S> ReaderArena for ReaderArenaImpl<S> where S: ReaderSegments {
         }
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     fn check_offset(&self, segment_id: u32, start: *const Word, offset_in_words: i32) -> Result<*const Word> {
         let (segment_start, segment_len) = self.get_segment(segment_id)?;
         let this_start: usize = segment_start as usize;
@@ -199,6 +200,7 @@ impl <A> ReaderArena for BuilderArenaImpl<A> where A: Allocator {
         Ok((seg.0 as *const _, seg.1))
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     fn check_offset(&self, _segment_id: u32, start: *const Word, offset_in_words: i32) -> Result<*const Word> {
         unsafe { Ok(start.offset(offset_in_words as isize)) }
     }
@@ -286,6 +288,7 @@ impl ReaderArena for NullArena {
         Err(Error::failed(format!("tried to read from null arena")))
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     fn check_offset(&self, _segment_id: u32, start: *const Word, offset_in_words: i32) -> Result<*const Word> {
         unsafe { Ok(start.offset(offset_in_words as isize)) }
     }

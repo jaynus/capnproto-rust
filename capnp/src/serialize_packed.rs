@@ -226,6 +226,7 @@ struct PackedWrite<W> where W: Write {
 impl <W> Write for PackedWrite<W> where W: Write {
     // This implementation assumes that the data in `in_buf` is actually
     // eight-byte aligned.
+    #[allow(clippy::cast_ptr_alignment)]
     fn write(&mut self, in_buf: &[u8]) -> io::Result<usize> {
         unsafe {
             let mut buf_idx: usize = 0;

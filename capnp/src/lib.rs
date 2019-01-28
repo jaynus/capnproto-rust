@@ -114,6 +114,7 @@ impl Word {
     /// Only call this if you know that either
     ///    1. `bytes.to_ptr()` falls on an eight-byte boundary, or
     ///    2. your processor is okay with unaligned reads.
+    #[allow(clippy::cast_ptr_alignment)]
     pub unsafe fn bytes_to_words<'a>(bytes: &'a [u8]) -> &'a [Word] {
         ::std::slice::from_raw_parts(bytes.as_ptr() as *const Word, bytes.len() / 8)
     }
@@ -122,6 +123,7 @@ impl Word {
     /// alignment issues. Only call this if you know that either
     ///    1. `bytes.to_ptr()` falls on an eight-byte boundary, or
     ///    2. your processor is okay with unaligned reads and writes
+    #[allow(clippy::cast_ptr_alignment)]
     pub unsafe fn bytes_to_words_mut<'a>(bytes: &'a mut [u8]) -> &'a mut [Word] {
         ::std::slice::from_raw_parts_mut(bytes.as_ptr() as *mut Word, bytes.len() / 8)
     }

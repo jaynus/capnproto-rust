@@ -34,6 +34,7 @@ impl Arena {
         Arena { allocations : RefCell::new(Vec::new()) }
     }
 
+    #[allow(clippy::mut_from_ref)]
     pub fn alloc<'a>(&'a self, length : usize) -> &'a mut [Word] {
         let mut v = ::capnp::Word::allocate_zeroed_vec(length);
         let result = unsafe {::std::slice::from_raw_parts_mut(v.as_mut_ptr(), v.len())};

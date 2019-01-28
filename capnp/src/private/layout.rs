@@ -151,11 +151,13 @@ impl WirePointer {
 
     #[inline]
     pub fn target(&self) -> *const Word {
+        #[allow(clippy::cast_ptr_alignment)]
         let this_addr: *const Word = self as *const _ as *const _;
         unsafe { this_addr.offset((1 + ((self.offset_and_kind.get() as i32) >> 2)) as isize) }
     }
 
     #[inline]
+    #[allow(clippy::cast_ptr_alignment)]
     pub fn target_from_segment(&self, arena: &ReaderArena, segment_id: u32) -> Result<*const Word> {
         let this_addr: *const Word = self as *const _ as *const _;
         let offset = 1 + ((self.offset_and_kind.get() as i32) >> 2);
@@ -163,6 +165,7 @@ impl WirePointer {
     }
 
     #[inline]
+    #[allow(clippy::cast_ptr_alignment)]
     pub fn mut_target(&mut self) -> *mut Word {
         let this_addr: *mut Word = self as *mut _ as *mut _;
         unsafe { this_addr.offset((1 + ((self.offset_and_kind.get() as i32) >> 2)) as isize) }
@@ -380,6 +383,7 @@ mod wire_helpers {
 
         if amount == 0 && kind == WirePointerKind::Struct {
             (*reff).set_kind_and_target_for_empty_struct();
+            #[allow(clippy::cast_ptr_alignment)]
             return (reff as *mut _, reff, segment_id);
         }
 
@@ -1390,7 +1394,7 @@ mod wire_helpers {
         }
 
         let count = (*reff).list_element_count();
-        if count <= 0 || *cptr.offset((count - 1) as isize) != 0 {
+        if *cptr.offset((count - 1) as isize) != 0 {
             return Err(Error::failed(
                 "Text blob missing NUL terminator.".to_string()));
         }
@@ -1442,6 +1446,7 @@ mod wire_helpers {
                 return Ok(&mut[]);
             } else {
                 let builder = init_data_pointer(arena, reff, segment_id, default_size).value;
+                #[allow(clippy::cast_ptr_alignment)]
                 ptr::copy_nonoverlapping(default_value as *const _,
                                          builder.as_mut_ptr() as *mut _,
                                          default_size as usize);
@@ -1564,6 +1569,7 @@ mod wire_helpers {
                 //# List of pointers.
                 (*reff).set_list_size_and_count(Pointer, value.element_count);
                 for i in 0.. value.element_count as isize {
+                    #[allow(clippy::cast_ptr_alignment)]
                     copy_pointer(arena, segment_id, cap_table,
                                  (ptr as *mut WirePointer).offset(i),
                                  value.arena,
@@ -1656,6 +1662,7 @@ mod wire_helpers {
             (*tag).set_struct_size_from_pieces(data_size as u16, ptr_count);
             let mut dst = ptr.offset(POINTER_SIZE_IN_WORDS as isize);
 
+            #[allow(clippy::cast_ptr_alignment)]
             let mut src: *const Word = value.ptr as *const _;
             for _ in 0.. value.element_count {
                 ptr::copy_nonoverlapping(src, dst, data_size as usize);
@@ -1986,10 +1993,6 @@ mod wire_helpers {
                         // first field in the struct is the pointer we were looking for, we want to
                         // munge the pointer to point at the first element's pointer section.
                         ptr = ptr.offset(data_size as isize);
-                        if ptr_count <= 0 {
-                            return Err(Error::failed(
-                                "Expected a pointer list, but got a list of data-only structs".to_string()));
-                        }
                     }
                 }
 
@@ -2095,10 +2098,6 @@ mod wire_helpers {
         bounds_check(arena, segment_id, ptr,
                      round_bytes_up_to_words(size) as usize,
                      WirePointerKind::List)?;
-
-        if size <= 0 {
-            return Err(Error::failed("Message contains text that is not NUL-terminated.".to_string()));
-        }
 
         let str_ptr = ptr as *const u8;
 
@@ -2314,6 +2313,7 @@ impl <'a> PointerReader<'a> {
         }
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn get_struct(self, default_value: *const Word) -> Result<StructReader<'a>> {
         let reff: *const WirePointer = if self.pointer.is_null() { zero_pointer() } else { self.pointer };
         unsafe {
@@ -2323,6 +2323,7 @@ impl <'a> PointerReader<'a> {
         }
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn get_list(self, expected_element_size: ElementSize,
                     default_value: *const Word) -> Result<ListReader<'a>> {
         let reff = if self.pointer.is_null() { zero_pointer() } else { self.pointer };
@@ -2350,6 +2351,7 @@ impl <'a> PointerReader<'a> {
         }
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn get_text(self, default_value: *const Word, default_size: ByteCount32) -> Result<text::Reader<'a>> {
         let reff = if self.pointer.is_null() { zero_pointer() } else { self.pointer };
         unsafe {
@@ -2357,6 +2359,7 @@ impl <'a> PointerReader<'a> {
         }
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn get_data(&self, default_value: *const Word, default_size: ByteCount32) -> Result<data::Reader<'a>> {
         let reff = if self.pointer.is_null() { zero_pointer() } else { self.pointer };
         unsafe {
@@ -2382,14 +2385,14 @@ impl <'a> PointerReader<'a> {
 
             match unsafe { (*reff).kind() } {
                 WirePointerKind::Far =>
-                    Err(::Error::failed(format!("Unexpected FAR pointer"))),
+                    Err(::Error::failed("Unexpected FAR pointer".to_string())),
                 WirePointerKind::Struct => Ok(PointerType::Struct),
                 WirePointerKind::List => Ok(PointerType::List),
                 WirePointerKind::Other => {
                     if unsafe { (*reff).is_capability() } {
                         Ok(PointerType::Capability)
                     } else {
-                        Err(::Error::failed(format!("Unknown pointer type")))
+                        Err(::Error::failed("Unknown pointer type".to_string()))
                     }
                 }
             }
@@ -2408,6 +2411,7 @@ impl <'a> PointerReader<'a> {
                 let mut ptr_trunc = false;
                 let st = self.get_struct(ptr::null())?;
                 if st.get_data_section_size() == 0 && st.get_pointer_section_size() == 0 {
+                    #[allow(clippy::cast_ptr_alignment)]
                     Ok(self.pointer as *const _ == st.get_location())
                 } else {
                     let result = st.is_canonical(read_head, read_head, &mut data_trunc, &mut ptr_trunc)?;
@@ -2458,6 +2462,7 @@ impl <'a> PointerBuilder<'a> {
         unsafe { (*self.pointer).is_null() }
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn get_struct(self, size: StructSize, default_value: *const Word) -> Result<StructBuilder<'a>> {
         unsafe {
             wire_helpers::get_writable_struct_pointer(
@@ -2470,6 +2475,7 @@ impl <'a> PointerBuilder<'a> {
         }
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn get_list(self, element_size: ElementSize, default_value: *const Word)
                     -> Result<ListBuilder<'a>>
     {
@@ -2479,6 +2485,7 @@ impl <'a> PointerBuilder<'a> {
         }
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn get_struct_list(self, element_size: StructSize,
                            default_value: *const Word) -> Result<ListBuilder<'a>>
     {
@@ -2488,6 +2495,7 @@ impl <'a> PointerBuilder<'a> {
         }
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn get_text(self, default_value: *const Word, default_size: ByteCount32)
                     -> Result<text::Builder<'a>>
     {
@@ -2498,6 +2506,7 @@ impl <'a> PointerBuilder<'a> {
         }
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn get_data(self, default_value: *const Word, default_size: ByteCount32)
                     -> Result<data::Builder<'a>>
     {
@@ -2747,6 +2756,7 @@ impl <'a> StructReader<'a> {
         Ok(result)
     }
 
+    #[allow(clippy::cast_ptr_alignment)]
     fn get_location(&self) -> *const Word {
         self.data as * const _
     }
@@ -3034,6 +3044,7 @@ impl <'a> ListReader<'a> {
 
         let struct_data: *const u8 = unsafe { self.ptr.offset(index_byte as isize) };
 
+        #[allow(clippy::cast_ptr_alignment)]
         let struct_pointers: *const WirePointer = unsafe {
             struct_data.offset((self.struct_data_size as usize / BITS_PER_BYTE) as isize) as *const _
         };
@@ -3051,6 +3062,7 @@ impl <'a> ListReader<'a> {
     }
 
     #[inline]
+    #[allow(clippy::cast_ptr_alignment)]
     pub fn get_pointer_element(self, index: ElementCount32) -> PointerReader<'a> {
         let offset = (index as u64 * self.step as u64 / BITS_PER_BYTE as u64) as u32;
         PointerReader {
@@ -3062,15 +3074,18 @@ impl <'a> ListReader<'a> {
         }
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn is_canonical(
         &self,
         read_head: &Cell<*const Word>,
         reff: *const WirePointer)
         -> Result<bool>
     {
+        #[allow(clippy::cast_ptr_alignment)]
         match self.element_size {
             ElementSize::InlineComposite => {
                 read_head.set(unsafe { read_head.get().offset(1) }); // tag word
+
                 if self.ptr as *const _ != read_head.get() {
                     return Ok(false)
                 }
@@ -3079,6 +3094,7 @@ impl <'a> ListReader<'a> {
                 }
                 let struct_size = (self.struct_data_size / BITS_PER_WORD as u32) +
                     self.struct_pointer_count as u32;
+                #[allow(clippy::cast_ptr_alignment)]
                 let word_count = unsafe { (*reff).list_inline_composite_word_count() };
                 if struct_size * self.element_count != word_count {
                     return Ok(false)
@@ -3225,6 +3241,7 @@ impl <'a> ListBuilder<'a> {
     pub fn get_struct_element(self, index: ElementCount32) -> StructBuilder<'a> {
         let index_byte = ((index as u64 * self.step as u64) / BITS_PER_BYTE as u64) as u32;
         let struct_data = unsafe{ self.ptr.offset(index_byte as isize)};
+        #[allow(clippy::cast_ptr_alignment)]
         let struct_pointers = unsafe {
             struct_data.offset(((self.struct_data_size as usize) / BITS_PER_BYTE) as isize) as *mut _
         };
@@ -3240,6 +3257,7 @@ impl <'a> ListBuilder<'a> {
     }
 
     #[inline]
+    #[allow(clippy::cast_ptr_alignment)]
     pub fn get_pointer_element(self, index: ElementCount32) -> PointerBuilder<'a> {
         let offset = (index as u64 * self.step as u64 / BITS_PER_BYTE as u64) as u32;
         PointerBuilder {
