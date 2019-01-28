@@ -656,7 +656,7 @@ fn generate_setter(gen: &GeneratorContext, discriminant_offset: u32,
                     initter_interior.push(Line(format!("self.builder.get_pointer_field({}).init_text(size)",
                                                        offset)));
                     initter_params.push("size: u32");
-                    (Some("::capnp::text::Reader".to_string()), Some("::capnp::text::Builder<'a>".to_string()))
+                    (Some("::capnp::text::Reader<'_>".to_string()), Some("::capnp::text::Builder<'a>".to_string()))
                 }
                 type_::Data(()) => {
                     setter_interior.push(Line(format!("self.builder.get_pointer_field({}).set_data(value);",
@@ -664,7 +664,7 @@ fn generate_setter(gen: &GeneratorContext, discriminant_offset: u32,
                     initter_interior.push(Line(format!("self.builder.get_pointer_field({}).init_data(size)",
                                                        offset)));
                     initter_params.push("size: u32");
-                    (Some("::capnp::data::Reader".to_string()), Some("::capnp::data::Builder<'a>".to_string()))
+                    (Some("::capnp::data::Reader<'_>".to_string()), Some("::capnp::data::Builder<'a>".to_string()))
                 }
                 type_::List(ot1) => {
                     return_result = true;
@@ -1082,6 +1082,7 @@ fn generate_node(gen: &GeneratorContext,
                  // Ugh. We need this to deal with the anonymous Params and Results
                  // structs that go with RPC methods.
                  parent_node_id: Option<u64>,
+                 rust_edition: RustEdition,
                  ) -> ::capnp::Result<FormattedText> {
     use schema_capnp::*;
 
@@ -1092,7 +1093,7 @@ fn generate_node(gen: &GeneratorContext,
     let nested_nodes = node_reader.get_nested_nodes()?;
     for nested_node in nested_nodes.iter() {
         let id = nested_node.get_id();
-        nested_output.push(generate_node(gen, id, gen.get_last_name(id)?, None)?);
+        nested_output.push(generate_node(gen, id, gen.get_last_name(id)?, None, rust_edition)?);
     }
 
     match node_reader.which()? {
@@ -1164,7 +1165,7 @@ fn generate_node(gen: &GeneratorContext,
                     Ok(field::Group(group)) => {
                         let id = group.get_type_id();
                         let text = generate_node(gen, id,
-                                                 gen.get_last_name(id)?, None)?;
+                                                 gen.get_last_name(id)?, None, rust_edition)?;
                         nested_output.push(text);
                     }
                     _ => { }
@@ -1316,7 +1317,7 @@ fn generate_node(gen: &GeneratorContext,
                 Line(format!("impl <'a,{0}> Reader<'a,{0}> {1} {{", params.params, params.where_clause)),
                 Indent(
                     Box::new(Branch(vec![
-                        Line(format!("pub fn reborrow(&self) -> Reader<{}> {{",params.params)),
+                        Line(format!("pub fn reborrow(&self) -> Reader{} {{",if bracketed_params.is_empty() { "<'_>".to_string() } else { bracketed_params.clone() })),
                         Indent(Box::new(Line("Reader { .. *self }".to_string()))),
                         Line("}".to_string()),
                         BlankLine,
@@ -1384,10 +1385,10 @@ fn generate_node(gen: &GeneratorContext,
                         Line(format!("pub fn into_reader(self) -> Reader<'a,{}> {{", params.params)),
                         Indent(Box::new(Line("::capnp::traits::FromStructReader::new(self.builder.into_reader())".to_string()))),
                         Line("}".to_string()),
-                        Line(format!("pub fn reborrow(&mut self) -> Builder<{}> {{", params.params)),
+                        Line(format!("pub fn reborrow(&mut self) -> Builder{} {{", if bracketed_params.is_empty() { "<'_>".to_string() } else { bracketed_params.clone() })),
                         Indent(Box::new(Line("Builder { .. *self }".to_string()))),
                         Line("}".to_string()),
-                        Line(format!("pub fn reborrow_as_reader(&self) -> Reader<{}> {{", params.params)),
+                        Line(format!("pub fn reborrow_as_reader(&self) -> Reader{} {{", if bracketed_params.is_empty() { "<'_>".to_string() } else { bracketed_params.clone() })),
                         Indent(Box::new(Line("::capnp::traits::FromStructReader::new(self.builder.into_reader())".to_string()))),
                         Line("}".to_string()),
 
@@ -1517,7 +1518,7 @@ fn generate_node(gen: &GeneratorContext,
                 let (param_scopes, params_ty_params) = if param_node.get_scope_id() == 0 {
                     let mut names = names.clone();
                     let local_name = module_name(&format!("{}Params", name));
-                    nested_output.push(generate_node(gen, param_id, &*local_name, Some(node_id))?);
+                    nested_output.push(generate_node(gen, param_id, &*local_name, Some(node_id), rust_edition)?);
                     names.push(local_name);
                     (names, params.params.clone())
                 } else {
@@ -1532,7 +1533,7 @@ fn generate_node(gen: &GeneratorContext,
                 let (result_scopes, results_ty_params) = if result_node.get_scope_id() == 0 {
                     let mut names = names.clone();
                     let local_name = module_name(&format!("{}Results", name));
-                    nested_output.push(generate_node(gen, result_id, &*local_name, Some(node_id))?);
+                    nested_output.push(generate_node(gen, result_id, &*local_name, Some(node_id), rust_edition)?);
                     names.push(local_name);
                     (names, params.params.clone())
                 } else {
@@ -1604,7 +1605,7 @@ fn generate_node(gen: &GeneratorContext,
             mod_interior.push(
                 Branch(vec!(
                     Line(format!("impl {} ::capnp::capability::FromClientHook for Client{} {{", bracketed_params, bracketed_params)),
-                    Indent(Box::new(Line(format!("fn new(hook: Box<::capnp::private::capability::ClientHook>) -> Client{} {{", bracketed_params)))),
+                    Indent(Box::new(Line(format!("fn new(hook: Box<{} ::capnp::private::capability::ClientHook>) -> Client{} {{", match rust_edition { RustEdition::Rust2018 => "dyn".to_string(), RustEdition::Rust2015 => "".to_string(),  }, bracketed_params)))),
                     Indent(Box::new(Indent(Box::new(Line(format!("Client {{ client: ::capnp::capability::Client::new(hook), {} }}", params.phantom_data)))))),
                     Indent(Box::new(Line("}".to_string()))),
                     Line("}".to_string()))));
@@ -1662,7 +1663,7 @@ fn generate_node(gen: &GeneratorContext,
                 Indent(
                     Box::new(
                         Branch(vec![
-                            Line(format!("fn set_pointer_builder(pointer: ::capnp::private::layout::PointerBuilder, from: Client<{}>, _canonicalize: bool) -> ::capnp::Result<()> {{",
+                            Line(format!("fn set_pointer_builder(pointer: ::capnp::private::layout::PointerBuilder<'_>, from: Client<{}>, _canonicalize: bool) -> ::capnp::Result<()> {{",
                                          params.params)),
                             Indent(Box::new(Line(
                                 "pointer.set_capability(from.client.hook);".to_string()))),
@@ -1914,7 +1915,7 @@ pub fn generate_code<T>(mut inp: T, out_dir: &::std::path::Path, edition: RustEd
             Line("// DO NOT EDIT.".to_string()),
             Line(format!("// source: {}", requested_file.get_filename()?)),
             BlankLine,
-            generate_node(&gen, id, &root_name, None)?));
+            generate_node(&gen, id, &root_name, None, edition)?));
 
         let text = stringify(&lines);
 
